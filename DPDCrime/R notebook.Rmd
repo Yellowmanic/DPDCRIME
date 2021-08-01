@@ -1,0 +1,429 @@
+---
+title: 'Exploratory Analysis: Detroit Reported Crimes (2017-2020) By Keith Parish'
+output:
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+    theme: united
+    code_folding: show
+  html_document:
+    toc: yes
+    df_print: paged
+---
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+## Required Libraries
+```{r message=FALSE}
+library(knitr)
+library(data.table)
+library(tidyverse)
+library(leaflet)
+library(lubridate)
+```
+## Introduction
+   * Observes Trends in the data
+   * Correlation Analysis on Temperature and Crime
+   <br>
+The data is found [here](https://data.detroitmi.gov/datasets/rms-crime-incidents/explore?location=42.353002%2C-83.099036%2C11.29). This data reflects reported criminal offenses that have occurred  in the city of Detroit. Offense data was extracted from the Detroit Police Department's records management system.
+## Loading in the Data
+Loading the data using readr and read.csv
+```{r}
+crime_raw <- read.csv("RMS_Crime_Incidents.csv")
+```
+ 
+## Data Preview
+Using DT 
+```{r}
+data.table(crime_raw, options = list(pageLength = 5, scrollX = '400px'))
+```
+```{r}
+crime_raw %>%
+  group_by(year) %>%
+  summarize(count = n()) %>% 
+  arrange(desc(year))
+```
+This dataset has data that goes as far back as 1915 but it only has accurate data since 2017 it appears. The limitation of this data will only allow us to accurately analyze the years 2017 through 2020.
+
+## Processing the data
+Renaming the incident_timestamp column for clarity and removing the time from the timestamp because there is already another column with that information. Filtering the data set because of the limitation. Adding extra columns that will allow for easier analysis. Getting rid of columns with  the same crime_id and arrest charge because that would mean it was a duplicate entry.
+
+```{r}
+crime <- crime_raw %>% 
+  rename(date = incident_timestamp) %>% 
+  mutate(date = ymd_hms(date)) %>% 
+  mutate(date = date(date)) %>% 
+  filter(year > 2016 & year <= 2020) %>% 
+  add_column(crime_type = NA) %>% 
+  add_column(month = NA) %>% 
+  mutate(month = month(date, TRUE)) %>% 
+  group_by(crime_id, arrest_charge) %>%
+  filter(!n()>1) %>% 
+  ungroup()
+
+```
+The two types of crime that are being analyzed are property and violent crimes. In order to categorize these crimes we need to view the unique offense categories.
+```{r}
+unique_offenses <- unique(crime[c("offense_category")])
+data.table(unique_offenses)
+```
+From here we can create two vectors to distinguish the property and violent crimes.
+```{r}
+#violent_crime <- scan("violent_crimes.txt", what ="character")
+violent_crime <- c("ASSAULT","AGGRAVATED ASSAULT","SEXUAL ASSAULT","HOMICIDE","KIDNAPPING")
+property_crime <- c("ROBBERY","LARCENY","ARSON","STOLEN VEHICLE","BURGLARY","DAMAGE TO PROPERTY","STOLEN PROPERTY")
+```
+Now we can update the crime_type column to show the crime_type. If it is neither a property or violent crime we will just classify it as other.
+```{r}
+`%notin%` <- Negate(`%in%`)
+crime <- within(crime, {
+  crime_type[offense_category %notin% (violent_crime) || (property_crime)] = "other"
+  crime_type[offense_category %in% (violent_crime)] = "violent"
+  crime_type[offense_category %in% (property_crime)] = "property"  })
+```
+The total of the type of reported crime in the 4 year period.
+
+```{r}
+crime %>% 
+  group_by(crime_type) %>% 
+  summarize(count = n())
+```
+
+```{r}
+crime %>% 
+  filter(crime_type == "other") %>% 
+  distinct(offense_category) 
+```
+Some of  these offenses aren't dependent on the variables we wanted to analyse. In order to get a clear analysis we will be looking at the data that is either classified as violent or property crime.
+```{r}
+crime <- crime %>% 
+  filter(crime_type != "other")
+```
+
+
+## Visualizing the Data
+
+Create a pie chart on the offense category. Here we can see the breakdown of offenses.
+```{r}
+dt <- crime %>% 
+  group_by(offense_category) %>% 
+  summarise(count = n()) %>% 
+  arrange(count, .by_group = TRUE)
+
+blank_theme <- theme_minimal()+
+  theme(
+    axis.title.x = element_blank(),
+    axis.title.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid=element_blank(),
+    axis.ticks = element_blank(),
+    plot.title=element_text(size=14, face="bold")
+  )
+dt %>%  ggplot(aes(x="", y=count, fill= offense_category))+
+  geom_bar(width = 1, stat = "identity")+
+  coord_polar("y", start = 0)+
+  blank_theme +
+  theme(axis.text.x=element_blank())+
+  labs(title = "Detroit Crime by Offense Category(2017-2020)")
+```
+Using the same data but making it bar chart
+```{r}
+dt %>% 
+  ggplot(aes(x = reorder(offense_category,count), y = count)) +
+  geom_col(fill = "orange")+
+  coord_flip()+
+  labs(title = "Crimes in Detroit 2017-2020", x = "Offense Category", y = "Crime Count")
+```
+
+
+### Crime Map
+Display all the offenses in 2020. Click the icons to show details.
+```{r}
+data <- crime %>% filter(year == 2020)
+data$popup <- paste("<b>Incident #: </b>", data$crime_id, "<br>", "<b>Category: </b>", data$offense_category,
+                    "<br>", "<b>Description: </b>", data$offense_description,
+                    "<br>", "<b>Day of week: </b>", data$day_of_week,
+                    "<br>", "<b>Date: </b>", data$date,
+                    "<br>", "<b>Time: </b>", data$incident_time,
+                    "<br>", "<b>Neighborhood: </b>", data$neighborhood,
+                    "<br>", "<b>Longitude: </b>", data$longitude,
+                    "<br>", "<b>Latitude: </b>", data$latitude)
+
+leaflet(data, width = "100%") %>% addTiles() %>%
+  addTiles(group = "OSM (default)") %>%
+  addProviderTiles(provider = "Esri.WorldStreetMap",group = "World StreetMap") %>%
+  #addProviderTiles(provider = "Esri.WorldImagery",group = "World Imagery") %>%
+  #addProviderTiles(provider = "NASAGIBS.ViirsEarthAtNight2012",group = "Nighttime Imagery") %>%
+  addMarkers(lng = ~longitude, lat = ~latitude, popup = data$popup, clusterOptions = markerClusterOptions()) %>%
+  addLayersControl(
+    baseGroups = c("OSM (default)","World StreetMap"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+```
+### Crime Type by Time
+```{r}
+
+crime %>%
+  group_by(offense_category,hour_of_day) %>%
+  summarise(count=n()) %>%
+  ggplot(aes(x=offense_category, y=hour_of_day)) +
+  geom_tile(aes(fill=count)) +
+  labs(Title = "Offense Type by Time", x="Crime", y = "Time of day") +
+  scale_fill_gradient(low = "white", high = "#101ade")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.6), legend.title = element_blank(), legend.position="top", legend.direction="horizontal", legend.key.width=unit(2, "cm"), legend.key.height=unit(0.25, "cm"))+
+  coord_flip()
+```
+The data is being shwon properly but due to the low amount of crime in the other categories we can't see when they are most likely to occur. Lets normalize the data and try again.
+
+```{r}
+
+crime %>%
+  group_by(offense_category,hour_of_day) %>%
+  summarise(count=n()) %>%
+  mutate(norm = count/sum(count)) %>% 
+  ggplot(aes(x=offense_category, y=hour_of_day)) +
+  geom_tile(aes(fill=norm)) +
+  labs(Title = "Offense Type by Time", x="Crime", y = "Time of day") +
+  scale_fill_gradient(low = "white", high = "#101ade")+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.6), legend.title = element_blank(), legend.position="top", legend.direction="horizontal", legend.key.width=unit(2, "cm"), legend.key.height=unit(0.25, "cm"))+
+  coord_flip()
+```
+
+### Crime over Time
+Lets look at the crime by date to see if there are any trends
+
+```{r}
+crime_daily <- crime %>%
+  mutate(date = as.Date(date, "%m/%d/%Y")) %>%
+  group_by(date) %>%
+  summarize(count = n()) %>%
+  arrange(date)
+
+crime_daily %>% 
+  ggplot(aes(date, count))+  
+  geom_line(color = "orange")+
+  geom_smooth(color = "black") 
+```
+
+The crime rate appears to raise around the summer months and lowers during the cooler months. Lets take a closer look at this.
+```{r}
+crime %>% 
+  group_by(month) %>% 
+  summarize(count= n()) %>% 
+  arrange(month) 
+```
+
+```{r}
+
+crime_month <- crime %>% 
+  group_by(month, year) %>% 
+  summarize(count= n()) %>% 
+  arrange(month)
+crime_month %>% 
+  ggplot(aes(month, count, group = 1))+
+  geom_area(fill = "orange")+ 
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+  facet_wrap(~year)
+
+```
+There is a dip in February reported crime , lets try to normalize the data to account for the fewer days. 
+```{r}
+crime_month <-crime %>% 
+  mutate(days_in_month = days_in_month(date)) %>% 
+  group_by(month, year, days_in_month) %>% 
+  summarize(count= n()) %>% 
+  mutate(daily_crime_rate = count/days_in_month)
+crime_month %>% 
+  ggplot(aes(month, daily_crime_rate, group = 1))+
+  geom_area(fill = "orange")+
+  scale_y_continuous(expand = c(0, 0), limits = c(0, NA))+
+  facet_wrap(~year)
+```
+From here we can see that accounting for the decreased or increased amount of days in a month by creating a daily crime rate variable we can access the trends more accurately. The crime rate still looks to rise during the warmer months, temperature data is required to analyze the correlation between crime and temperature.
+
+
+## Crime Vs. Temperature
+The National Centers For Environmental Information(NCEI) has historical weather and climate data for the United States. We are using a database that shows the climate data in Detroit taken from the Coleman A. Young International Airport.
+### Importing and Joining the Datasets
+```{r}
+weather_raw <- read.csv("Detroit_Weather.csv")
+data.table(weather_raw)
+```
+There is a lot of variables in these observations. We only need the date and the temperature. Dry bulb temperature aka air temperature is defined as the temperature of the air when a thermometer is exposed to it, we will be using this temperature for our analysis.
+
+```{r}
+weather <- weather_raw %>% 
+  select(DATE, HourlyDryBulbTemperature) %>%
+  rename(temperature = HourlyDryBulbTemperature, date = DATE)
+  
+weather <- weather %>% mutate(date = ymd_hms(date))
+weather$date <- round_date(weather$date, unit="15 minutes") 
+
+
+weather$hour_of_day <- hour(weather$date)
+weather$date <- date(weather$date)
+weather <- unique(weather[c("hour_of_day", "date", "temperature")])  
+weather <- weather[!(is.na(weather$temperature) | weather$temperature==""), ]
+weather$temperature = as.integer(weather$temperature)
+
+data.table(weather)
+
+```
+Formatted and manipulated the data so the columns can match up with the other data frame so we can join. Creating a new variable called hour_of_day and it rounds the time up or down to the nearest 15 minutes.We will be able to analyze what the temperature was the hour the crime was committed.
+
+```{r}
+crime <- left_join(crime, weather, by = c("date", "hour_of_day")) %>%   
+  distinct(arrest_charge, offense_category, date, crime_id, .keep_all = TRUE) %>% 
+  select(-arrest_charge, -crime_id) %>% 
+  fill(temperature)
+data.table(crime, options = list(pageLength = 5, scrollX = '400px'))
+```
+After joining the tables there were some NA values because some of the values in the weather dataset was blank so we just filled it with the nearest value using the fill function. 
+
+```{r}
+crime_temp_month <- crime %>% 
+  mutate(pop = case_when(
+    year == 2017 ~ 679865,
+    year == 2018 ~ 677155,
+    year == 2019 ~ 674841,
+    year == 2020 ~ 664139
+  )) %>% 
+  group_by(month, year, pop) %>%
+  summarize(mean_temp = mean(temperature, na.rm =T), count = n()) %>% 
+  mutate(crime_rate = count/pop*100000)
+
+crime_temp_month %>% 
+  ggplot(aes(mean_temp, crime_rate)) + 
+  geom_point()+
+  geom_smooth(color = "orange", method = "lm")+
+  labs(title = "Temperature vs. Crime Rate in Detroit(2017-2020)", x = " Average Temperature(Month)", y = "Crime Rate Per 100000")
+
+```
+Here we can see the average temperature of all the months and the crime rate per 100000. We can see a positive correlation between the average temperature and the crime rate.
+```{r}
+cor(crime_temp_month$mean_temp, crime_temp_month$crime_rate)
+```
+We can see that the correlation is .8 which is a strong positive correlation between the two variables. 
+## Crime Vs. Day of Week
+
+```{r}
+hour_format <- c(paste(c(12,1:11),"AM"), paste(c(12,1:11),"PM"))
+dow_format <- c("Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday")
+
+crime_dow <- crime %>% 
+  group_by(day_of_week, offense_category, hour_of_day) %>% 
+  summarize(count = n())
+
+crime_dow$day_of_week <- factor(crime_dow$day_of_week, labels = rev(dow_format), ordered = TRUE)
+crime_dow$hour_of_day <- factor(crime_dow$hour_of_day, level = 0:23, label = hour_format)
+
+
+data.table(crime_dow)
+```
+
+```{r}
+ggplot(crime_dow, aes(x = hour_of_day, y = day_of_week, fill = count))+
+  geom_tile()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.6), legend.title = element_blank(), legend.position="top", legend.direction="horizontal", legend.key.width=unit(2, "cm"), legend.key.height=unit(0.25, "cm")) +
+  labs(x = "Hour of Reported Crime", y = "Day of Week ", title = "Reported Property and Violent Crimes in Detroit (2017-2020)") +
+  scale_fill_gradient(low = "white", high = "#101ade")
+```
+
+Lets look at the correlation between offense category and time.
+
+
+```{r}
+crime_dow <- crime_dow %>% 
+  mutate(norm = count/sum(count))
+ggplot(crime_dow, aes(x = hour_of_day, y = day_of_week, fill = norm)) +
+  geom_tile() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.6, size = 4)) +
+  labs(x = "Hour of Crime", y = "Day of Week", title = "Number of Crimes in Detroit from 2017-2020 by Normalized by Offense") +
+  scale_fill_gradient(low = "white", high = "#101ade") +
+  facet_wrap(~ offense_category)
+```
+Here we can see that a lot of crimes happen late night/early morning.
+
+## Crime by Zipcode
+Lets take a look at crime by zip code
+
+Factoring.
+```{r}
+crime_dow_zipcode <- crime %>% 
+  group_by(day_of_week, zip_code, hour_of_day) %>% 
+  summarise(count = n())
+
+crime_dow_zipcode$day_of_week <- factor(crime_dow_zipcode$day_of_week, labels = rev(dow_format), ordered = TRUE)
+crime_dow_zipcode$hour_of_day <- factor(crime_dow_zipcode$hour_of_day, level = 0:23, label = hour_format)
+```
+```{r, fig.height = 12, fig.width = 12}
+ggplot(crime_dow_zipcode, aes(x = hour_of_day, y = day_of_week, fill = count)) +
+  geom_tile() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.6, size = 4)) +
+  labs(x = "Hour of Crime", y = "Day of Week", title = "Number of crimes in Detroit 2017 – 2020, by Zipcode") +
+  scale_fill_gradient(low = "white", high = "#101ade") +
+  facet_wrap(~ zip_code)  
+```
+This visualization doesn't account for crime in zip codes where the population in lower. Lets find some data on population in the area codes so we can look at crime rate. 
+
+```{r}
+zip_code_database<- read.csv("detroit_zipcodes.csv")
+data.table(zip_code_database)
+
+
+```
+This data is from https://www.michigan-demographics.com/ which claims to have up to date demographics from the US census.Some of the zip codes in the dataset have other cities in which we dont have crime data for. So those zipcodes will be filtered out so we can look at a majority of Detroit.  
+```{r}
+
+filtered_zipcodes <-c(48203, 48212, 48236, 48239, 48243)
+
+crime_zipcode <- crime %>% 
+  filter(zip_code %notin% filtered_zipcodes) %>% 
+  group_by(zip_code, crime_type) %>% 
+  summarise(count = n())
+
+data.table(zip_code_database)
+
+```
+```{r}
+crime_zipcode <- left_join(crime_zipcode, zip_code_database, by = "zip_code") %>% 
+  drop_na() %>% 
+  mutate(crime_rate = (count/Population)*1000)
+crime_zipcode$zip_code <- factor(crime_zipcode$zip_code)
+
+
+data.table(crime_zipcode)
+```
+```{r}
+ggplot(crime_zipcode, aes(zip_code,crime_rate, fill = crime_type))+
+  geom_col() +
+  scale_fill_manual("crime_type", values = c("property"= "#101ade", "violent" = "orange")) +
+  coord_flip()+
+  labs(title = "Crime Rate in Detroit by Zipcode (2017-2020)",x = "Zip Code",
+       y = "Crime Rate per 1000",
+       fill = "Crime Type")
+```
+Here we can see the crime by zip codes and what instantly stands out is the 48226 zip code. This zip code is downtown and has very few residents so the crime rate is inflated. The crime rate is also misleading because downtown Detroit is a hot spot of many attractions and that leads to non residents from all around the Metro Detroit area to visit. There is other zipcodes that are new downtown or midtown I will get exclude from this analysis.  
+
+This graph is scaled better and we can see the differences between the other zipcodes.
+```{r}
+downtown_zipcodes <- c(48243, 48226, 48201, 48202, 48216, 48207)
+crime_zipcode %>% 
+  filter(zip_code %notin% downtown_zipcodes) %>% 
+  ggplot(aes(zip_code,crime_rate, fill = crime_type))+
+  geom_col() +
+  scale_fill_manual("crime_type", values = c("property"= "#101ade", "violent" = "orange")) +
+  coord_flip()+
+  labs(title = "Crime Rate in Detroit by Zipcode* (2017-2020)",
+       caption = "* Downtown, Midtown and surrounding areas removed",
+       x = "Zip Code",
+       y = "Crime Rate per 1000",
+       fill = "Crime Type")
+```
+
+
+
+## Conclusion 
+
+We can see that weather has a positive correlation with crime rate also it seems like the summer months are when the crime rate is the highest and the colder months especially February seeing a decline. Most of the crimes happen during late night/ early morning. We can also see a correlation with Covid-19 and crime since 2020 numbers were lower than the other years. We then took a look at the crime rate by zipcode and looked at the time and day when a certain offense might be committed.
